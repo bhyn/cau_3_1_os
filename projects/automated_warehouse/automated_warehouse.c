@@ -11,24 +11,18 @@
 #include "projects/automated_warehouse/aw_manager.h"
 
 struct robot* robots;
+int number_of_robots;
 
-// test code for central control node thread
-void test_cnt(){
-        while(1){
-                print_map(robots, 3);
-                thread_sleep(1000);
-                block_thread();
-        }
+
+// 중앙 관제 스레드 함수 (나중에 구현)
+void central_control_thread(void* aux) {
+    // TODO: 중앙 관제 로직 구현
 }
 
-// test code for robot thread
-void test_thread(void* aux){
-        int idx = *((int *)aux);
-        int test = 0;
-        while(1){
-                printf("thread %d : %d\n", idx, test++);
-                thread_sleep(idx * 1000);
-        }
+// 로봇 스레드 함수 (나중에 구현)
+void robot_thread(void* aux) {
+    int idx = *((int *)aux);
+    // TODO: 로봇 로직 구현
 }
 
 // entry point of simulator
@@ -36,25 +30,34 @@ void run_automated_warehouse(char **argv)
 {
         init_automated_warehouse(argv); // do not remove this
 
-        printf("implement automated warehouse!\n");
+        number_of_robots = atoi(argv[1]);
+        robots = malloc(sizeof(struct robot) * number_of_robots);
 
-        // test case robots
-        robots = malloc(sizeof(struct robot) * 3);
-        setRobot(&robots[0], "R1", 5, 5, 0, 0);
-        setRobot(&robots[1], "R2", 0, 2, 0, 0);
-        setRobot(&robots[2], "R3", 1, 1, 1, 1);
+        parse_robot_tasks(argv[2], robots, number_of_robots);
 
-        // example of create thread
-        tid_t cnt_thread = 0;
-        cnt_thread = thread_create("CNT", 0, &test_cnt, NULL);
+        // 각 로봇에 이름 붙이기..?
+        for (int i = 0; i < number_of_robots; i++) {
+            char *name = malloc(10);
+            sprintf(name, "R%d", i + 1);
+            robots[i].name = name;
+        }
+// 중앙 관제 스레드 생성   
+        tid_t cnt_thread = thread_create("CNT", 0, central_control_thread, NULL);
+// 로봇 스레드 생성
+        tid_t* robot_threads = malloc(sizeof(tid_t) * number_of_robots);
+        int* robot_indices = malloc(sizeof(int) * number_of_robots);
 
-        tid_t* threads = malloc(sizeof(tid_t) * 3);
-        int _idxs[3] = {1, 2, 3};
-        threads[0] = thread_create("R1", 0, &test_thread, &_idxs[0]);
-        threads[1] = thread_create("R2", 0, &test_thread, &_idxs[1]);
-        threads[2] = thread_create("R3", 0, &test_thread, &_idxs[2]);
+        for (int i = 0; i < number_of_robots; i++) {
+            robot_indices[i] = i;  // 로봇 인덱스 저장
+            robot_threads[i] = thread_create(
+                robots[i].name,      // 로봇 이름: "R1", "R2", ...
+                0,                   // 우선순위
+                robot_thread,        // 함수
+                &robot_indices[i]    // 인자
+            );
+        }
 
         // must be called after parsing
-        handle_parse_completion(cnt_thread, threads, 3);
+    handle_parse_completion(cnt_thread, robot_threads, number_of_robots);
         
 }
