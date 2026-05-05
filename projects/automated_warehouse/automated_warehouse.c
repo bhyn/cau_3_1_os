@@ -20,7 +20,7 @@ void central_control_thread(void* aux) {
     while(1){
         print_map(robots, number_of_robots);
         thread_sleep(1000);
-        block_thread(); // ? 
+        block_thread(); // ?
     }
 }
 // 셀에 장애물이 있는지 확인하는 함수
@@ -152,7 +152,7 @@ void robot_thread(void* aux) {
         move_robot_to(robot, dest_row, dest_col);
         robot->current_payload = 0;
 
-        block_thread();
+        block_thread(); // 작업이 끝난 후 스레드를 블록하여 중앙 관제 스레드가 다음 명령을 내릴 때까지 대기
 }
 
 // entry point of simulator
