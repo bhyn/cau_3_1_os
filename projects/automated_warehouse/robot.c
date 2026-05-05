@@ -1,4 +1,5 @@
 #include "projects/automated_warehouse/robot.h"
+#include "projects/automated_warehouse/aw_manager.h"
 #include <string.h>
 #include <stdlib.h>
 /**
@@ -15,13 +16,24 @@ void setRobot(struct robot* _robot, const char* name, char required_item, char d
 }
 
 void parse_robot_tasks(const char *task_string, struct robot *robots, int num_robots){
-    char *task = strtok(task_string, ":");
+    // task_string을 수정하지 않기 위해 복사
+    char task_copy[256];
+    strcpy(task_copy, task_string);
+    
+    char *task = strtok(task_copy, ":");
 
-    for (int i=0; i<num_robots&&task!=NULL ;i++){
-        int item = task[0] -'0';
-        char destination = task[1];
+    for (int i = 0; i < num_robots && task != NULL; i++) {
+        int item = task[0] - '0';           
+        char destination = task[1];        
 
-        setRobot(&robots[i], NULL, item, destination, 0, 0, item, 0);
+        // 모든 로봇은 W(대기장소)에서 시작! 중요!!
+        setRobot(&robots[i], 
+                 NULL,                      // 이름은 나중에 automated_warehouse.c에서 설정
+                 item,                      // 물건 번호
+                 destination,               // 하역 장소
+                 ROW_W, COL_W,              // W 위치 (6, 5)
+                 item,                      // required_payload
+                 0);                        // current_payload (처음엔 아무것도 안 들음)
 
         task = strtok(NULL, ":");
     }

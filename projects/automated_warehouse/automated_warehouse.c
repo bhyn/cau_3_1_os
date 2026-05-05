@@ -9,6 +9,7 @@
 #include "devices/timer.h"
 
 #include "projects/automated_warehouse/aw_manager.h"
+#include "projects/automated_warehouse/robot.h"
 
 struct robot* robots;
 int number_of_robots;
@@ -35,12 +36,25 @@ void run_automated_warehouse(char **argv)
 
         parse_robot_tasks(argv[2], robots, number_of_robots);
 
-        // 각 로봇에 이름 붙이기..?
+        // 각 로봇에 이름 붙이기
         for (int i = 0; i < number_of_robots; i++) {
             char *name = malloc(10);
             sprintf(name, "R%d", i + 1);
             robots[i].name = name;
         }
+
+        // ===== 디버깅: 파싱 결과 확인 =====
+        printf("[DEBUG] Parsing complete!\n");
+        printf("[DEBUG] Number of robots: %d\n", number_of_robots);
+        for (int i = 0; i < number_of_robots; i++) {
+            printf("[DEBUG] Robot %s: Item %d -> Dest %c at (%d,%d)\n",
+                   robots[i].name,
+                   robots[i].required_item,
+                   robots[i].destination,
+                   robots[i].row,
+                   robots[i].col);
+        }
+        printf("===================================\n\n");
 // 중앙 관제 스레드 생성   
         tid_t cnt_thread = thread_create("CNT", 0, central_control_thread, NULL);
 // 로봇 스레드 생성
@@ -48,12 +62,12 @@ void run_automated_warehouse(char **argv)
         int* robot_indices = malloc(sizeof(int) * number_of_robots);
 
         for (int i = 0; i < number_of_robots; i++) {
-            robot_indices[i] = i;  // 로봇 인덱스 저장
+            robot_indices[i] = i;  
             robot_threads[i] = thread_create(
-                robots[i].name,      // 로봇 이름: "R1", "R2", ...
-                0,                   // 우선순위
-                robot_thread,        // 함수
-                &robot_indices[i]    // 인자
+                robots[i].name,      
+                0,                   
+                robot_thread,        
+                &robot_indices[i]    
             );
         }
 
