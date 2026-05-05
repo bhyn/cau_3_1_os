@@ -10,6 +10,8 @@
 
 #include "projects/automated_warehouse/aw_manager.h"
 #include "projects/automated_warehouse/robot.h"
+#include "projects/automated_warehouse/aw_message.h"
+#include "projects/automated_warehouse/aw_thread.h"
 
 struct robot* robots;
 int number_of_robots;
@@ -17,10 +19,54 @@ int number_of_robots;
 
 // 중앙 관제 스레드 함수
 void central_control_thread(void* aux) {
+    int num_robots_ptr = (int)aux;  // 실제로는 void*로 num_robots 받음
+    
+    // 해석: aux가 NULL이면 global number_of_robots 사용
+    int n_robots = number_of_robots;
+    
     while(1){
-        print_map(robots, number_of_robots);
-        thread_sleep(1000);
-        block_thread(); // ?
+        printf("\n[CENTRAL] === STEP %d START ===\n", step);
+        
+        // 1️⃣ 모든 로봇으로부터 상태 메시지 수집
+        printf("[CENTRAL] 모든 로봇의 상태를 대기 중...\n");
+        int all_ready = 0;
+        int timeout = 0;
+        
+        while (!all_ready && timeout < 100) {
+            all_ready = 1;
+            for (int i = 0; i < n_robots; i++) {
+                if (!is_message_from_robot_ready(i)) {
+                    all_ready = 0;
+                    break;
+                }
+            }
+            if (!all_ready) {
+                timer_sleep(10);  // 로봇들이 메시지 보낼 시간 주기
+                timeout++;
+            }
+        }
+        
+        printf("[CENTRAL] 모든 로봇 상태 수집 완료!\n");
+        
+        // 2️⃣ 맵 출력
+        print_map(robots, n_robots);
+        
+        // 3️⃣ 각 로봇에게 명령 전송 (일단 WAIT 명령만 전송)
+        printf("[CENTRAL] 각 로봇에게 명령 전송...\n");
+        for (int i = 0; i < n_robots; i++) {
+            send_command_to_robot(i, 0);  // 0 = WAIT 명령
+        }
+        
+        // 4️⃣ 스텝 증가
+        increase_step();
+        
+        // 5️⃣ 모든 로봇 깨우기 (UNBLOCK)
+        printf("[CENTRAL] 모든 로봇을 UNBLOCK 합니다...\n");
+        unblock_threads();
+        
+        printf("[CENTRAL] === STEP %d END ===\n\n", step - 1);
+        
+        timer_sleep(1000);  // 1초 대기
     }
 }
 // 셀에 장애물이 있는지 확인하는 함수
@@ -148,11 +194,42 @@ void robot_thread(void* aux) {
         // 물건 위치로 이동
         move_robot_to(robot, item_row, item_col);
         robot->current_payload = robot->required_payload;
+        
         // 목적지로 이동
         move_robot_to(robot, dest_row, dest_col);
         robot->current_payload = 0;
 
-        block_thread(); // 작업이 끝난 후 스레드를 블록하여 중앙 관제 스레드가 다음 명령을 내릴 때까지 대기
+        // ===== 메시지 시스템 통합 =====
+        while(1) {
+            // 1️⃣ 자신의 상태를 중앙에 보고
+            struct message msg;
+            msg.row = robot->row;
+            msg.col = robot->col;
+            msg.current_payload = robot->current_payload;
+            msg.required_payload = robot->required_payload;
+            
+            printf("[%s] 상태 보고: row=%d, col=%d, payload=%d\n",
+                   robot->name, msg.row, msg.col, msg.current_payload);
+            
+            send_message_to_central(idx, &msg);
+            
+            // 2️⃣ 중앙이 모든 로봇의 상태를 받을 때까지 대기 (BLOCK)
+            printf("[%s] 중앙으로부터 명령을 기다리며 BLOCK됩니다.\n", robot->name);
+            block_thread();
+            printf("[%s] UNBLOCK되었습니다! 명령을 처리합니다.\n", robot->name);
+            
+            // 3️⃣ 중앙으로부터 받은 명령 실행
+            int cmd = receive_command_from_central(idx);
+            printf("[%s] 명령 %d을(를) 받았습니다.\n", robot->name, cmd);
+            
+            // 명령 처리 (현재는 WAIT만 구현)
+            if (cmd == 0) {  // WAIT
+                printf("[%s] WAIT 명령 실행\n", robot->name);
+            }
+            
+            // 메시지 박스 초기화
+            clear_message_box(idx, 0);  // 로봇->중앙 메시지 클리어
+        }
 }
 
 // entry point of simulator
@@ -184,8 +261,15 @@ void run_automated_warehouse(char **argv)
                    robots[i].col);
         }
         printf("===================================\n\n");
+        
+        // ===== 메시지 박스 초기화 =====
+        printf("[INFO] 메시지 박스 초기화 중...\n");
+        init_message_boxes(number_of_robots);
+        printf("[INFO] 메시지 박스 초기화 완료!\n\n");
+        
 // 중앙 관제 스레드 생성   
         tid_t cnt_thread = thread_create("CNT", 0, central_control_thread, NULL);
+        
 // 로봇 스레드 생성
         tid_t* robot_threads = malloc(sizeof(tid_t) * number_of_robots);
         int* robot_indices = malloc(sizeof(int) * number_of_robots);
