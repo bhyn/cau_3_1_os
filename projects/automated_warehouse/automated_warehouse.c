@@ -15,15 +15,15 @@ struct robot* robots;
 int number_of_robots;
 
 
-// 중앙 관제 스레드 함수 (나중에 구현)
+// 중앙 관제 스레드 함수
 void central_control_thread(void* aux) {
     while(1){
         print_map(robots, number_of_robots);
         thread_sleep(1000);
-        block_thread();
+        block_thread(); // ? 
     }
 }
-
+// 셀에 장애물이 있는지 확인하는 함수
 static int
 is_blocked_cell(int row, int col)
 {
@@ -31,7 +31,7 @@ is_blocked_cell(int row, int col)
                 return 1;
         return map_draw_default[row][col] == 'X';
 }
-
+// 물건 위치를 반환하는 함수
 static void
 get_item_position(char item, int *row, int *col)
 {
@@ -48,7 +48,7 @@ get_item_position(char item, int *row, int *col)
         *row = ROW_S;
         *col = COL_S;
 }
-
+// 목적지 위치를 반환하는 함수
 static void
 get_destination_position(char destination, int *row, int *col)
 {
@@ -71,7 +71,7 @@ get_destination_position(char destination, int *row, int *col)
                 break;
         }
 }
-
+// BFS를 이용하여 로봇을 목표 위치로 이동시키는 함수
 static void
 move_robot_to(struct robot *robot, int target_row, int target_col)
 {
@@ -133,7 +133,7 @@ move_robot_to(struct robot *robot, int target_row, int target_col)
                 thread_sleep(100);
         }
 }
-
+// 로봇 스레드 함수
 void robot_thread(void* aux) {
         int idx = *((int *)aux);
         struct robot *robot = &robots[idx];
@@ -141,13 +141,14 @@ void robot_thread(void* aux) {
         int item_col;
         int dest_row;
         int dest_col;
-
+        
         get_item_position(robot->required_item + '0', &item_row, &item_col);
         get_destination_position(robot->destination, &dest_row, &dest_col);
 
+        // 물건 위치로 이동
         move_robot_to(robot, item_row, item_col);
         robot->current_payload = robot->required_payload;
-
+        // 목적지로 이동
         move_robot_to(robot, dest_row, dest_col);
         robot->current_payload = 0;
 

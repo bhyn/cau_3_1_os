@@ -1,4 +1,2 @@
-docker start pintos
-docker exec -it pintos bash
-cd root/pintos/threads/build  
-../../utils/pintos automated_warehouse 5 2A:4C:2B:2C:3A
+docker start pintos && docker exec -it pintos bash
+cd root/pintos/threads/build  && ../../utils/pintos automated_warehouse 5 2A:4C:2B:2C:3A
