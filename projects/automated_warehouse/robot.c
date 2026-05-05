@@ -18,9 +18,10 @@ void setRobot(struct robot* _robot, const char* name, char required_item, char d
 void parse_robot_tasks(const char *task_string, struct robot *robots, int num_robots){
     // task_string을 수정하지 않기 위해 복사
     char task_copy[256];
-    strcpy(task_copy, task_string);
+    strlcpy(task_copy, task_string, sizeof(task_copy));
     
-    char *task = strtok(task_copy, ":");
+    char *saveptr;
+    char *task = strtok_r(task_copy, ":", &saveptr);
 
     for (int i = 0; i < num_robots && task != NULL; i++) {
         int item = task[0] - '0';           
@@ -35,6 +36,6 @@ void parse_robot_tasks(const char *task_string, struct robot *robots, int num_ro
                  item,                      // required_payload
                  0);                        // current_payload (처음엔 아무것도 안 들음)
 
-        task = strtok(NULL, ":");
+        task = strtok_r(NULL, ":", &saveptr);
     }
 }
