@@ -1,6 +1,6 @@
 #include "projects/automated_warehouse/aw_message.h"
 #include "threads/malloc.h"
-#include <stdio.h>
+#include <string.h>
 
 // 전역 메시지 박스
 struct message_box* boxes_from_central_control_node = NULL;
@@ -19,18 +19,14 @@ void init_message_boxes(int num_robots) {
     boxes_from_robots = malloc(sizeof(struct message_box) * num_robots);
     boxes_from_central_control_node = malloc(sizeof(struct message_box) * num_robots);
     
-    if (boxes_from_robots == NULL || boxes_from_central_control_node == NULL) {
-        printf("[ERROR] Failed to allocate message boxes\n");
-        return;
-    }
-    
     // 모든 메시지 박스 초기화
     for (int i = 0; i < num_robots; i++) {
         boxes_from_robots[i].dirtyBit = 0;
         boxes_from_central_control_node[i].dirtyBit = 0;
+        memset(&boxes_from_robots[i].msg, 0, sizeof(struct message));
+        memset(&boxes_from_central_control_node[i].msg, 0,
+               sizeof(struct message));
     }
-    
-    printf("[INFO] Message boxes initialized for %d robots\n", num_robots);
 }
 
 /**
@@ -41,9 +37,6 @@ void init_message_boxes(int num_robots) {
 void send_message_to_central(int robot_id, struct message *msg) {
     boxes_from_robots[robot_id].msg = *msg;
     boxes_from_robots[robot_id].dirtyBit = 1;  // 새 메시지 도착 표시
-    
-    printf("[MSG] Robot %d sent: row=%d, col=%d, payload=%d\n",
-           robot_id, msg->row, msg->col, msg->current_payload);
 }
 
 /**
@@ -63,8 +56,6 @@ struct message receive_message_from_robot(int robot_id) {
 void send_command_to_robot(int robot_id, int cmd) {
     boxes_from_central_control_node[robot_id].msg.cmd = cmd;
     boxes_from_central_control_node[robot_id].dirtyBit = 1;
-    
-    printf("[CMD] Sent command %d to robot %d\n", cmd, robot_id);
 }
 
 /**

@@ -17,6 +17,8 @@ struct message {
     int current_payload;
     /** required paylod of robot */
     int required_payload;
+    /** check if robot completed its task */
+    int completed;
 
     //
     // To robots
