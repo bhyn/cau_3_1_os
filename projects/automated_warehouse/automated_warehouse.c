@@ -121,6 +121,13 @@ get_destination_position(char destination, int *row, int *col)
 static void
 move_robot_to(struct robot *robot, int target_row, int target_col)
 {
+        // ... existing code ...
+}
+
+// 한 칸씩 이동하는 함수 (매 STEP마다 한 칸)
+static void
+move_robot_to_one_step(struct robot *robot, int target_row, int target_col)
+{
         static const int dr[4] = {-1, 1, 0, 0};
         static const int dc[4] = {0, 0, -1, 1};
         int parent[MAP_HEIGHT][MAP_WIDTH];
@@ -160,6 +167,7 @@ move_robot_to(struct robot *robot, int target_row, int target_col)
         if (parent[target_row][target_col] == -1)
                 return;
 
+        // 경로 계산
         int path_len = 0;
         int row = target_row;
         int col = target_col;
@@ -173,10 +181,10 @@ move_robot_to(struct robot *robot, int target_row, int target_col)
                 col = prev % MAP_WIDTH;
         }
 
-        for (int i = path_len - 1; i >= 0; i--) {
-                robot->row = path_r[i];
-                robot->col = path_c[i];
-                thread_sleep(100);
+        // 경로의 첫 번째 칸으로만 이동 (한 칸만!)
+        if (path_len > 0) {
+                robot->row = path_r[path_len - 1];
+                robot->col = path_c[path_len - 1];
         }
 }
 // 로봇 스레드 함수
@@ -191,16 +199,43 @@ void robot_thread(void* aux) {
         get_item_position(robot->required_item + '0', &item_row, &item_col);
         get_destination_position(robot->destination, &dest_row, &dest_col);
 
-        // 물건 위치로 이동
-        move_robot_to(robot, item_row, item_col);
-        robot->current_payload = robot->required_payload;
-        
-        // 목적지로 이동
-        move_robot_to(robot, dest_row, dest_col);
-        robot->current_payload = 0;
+        printf("[%s] 작업 시작: 물건(%d)을 (%d,%d)에서 집어서 (%d,%d)로 이동\n",
+               robot->name, robot->required_item, item_row, item_col, dest_row, dest_col);
 
         // ===== 메시지 시스템 통합 =====
+        int task_completed = 0;  // 작업 완료 여부
+        
         while(1) {
+            // 작업이 아직 안 끝났으면 다음 목표로 한 칸 이동
+            if (!task_completed) {
+                // 먼저 물건을 집어야 함
+                if (robot->current_payload == 0 && 
+                    (robot->row != item_row || robot->col != item_col)) {
+                    // 물건 위치로 한 칸 이동
+                    move_robot_to_one_step(robot, item_row, item_col);
+                    printf("[%s] 물건 위치로 이동 중: (%d,%d)\n", 
+                           robot->name, robot->row, robot->col);
+                } else if (robot->current_payload == 0 && 
+                           robot->row == item_row && robot->col == item_col) {
+                    // 물건 도착!
+                    robot->current_payload = robot->required_payload;
+                    printf("[%s] 물건 집음! payload=%d\n", 
+                           robot->name, robot->current_payload);
+                } else if (robot->current_payload > 0 && 
+                           (robot->row != dest_row || robot->col != dest_col)) {
+                    // 목적지로 한 칸 이동
+                    move_robot_to_one_step(robot, dest_row, dest_col);
+                    printf("[%s] 목적지로 이동 중: (%d,%d)\n", 
+                           robot->name, robot->row, robot->col);
+                } else if (robot->current_payload > 0 && 
+                           robot->row == dest_row && robot->col == dest_col) {
+                    // 목적지 도착!
+                    robot->current_payload = 0;
+                    task_completed = 1;
+                    printf("[%s] 물건 하역 완료! 작업 끝!\n", robot->name);
+                }
+            }
+            
             // 1️⃣ 자신의 상태를 중앙에 보고
             struct message msg;
             msg.row = robot->row;
@@ -208,8 +243,8 @@ void robot_thread(void* aux) {
             msg.current_payload = robot->current_payload;
             msg.required_payload = robot->required_payload;
             
-            printf("[%s] 상태 보고: row=%d, col=%d, payload=%d\n",
-                   robot->name, msg.row, msg.col, msg.current_payload);
+            printf("[%s] 상태 보고: row=%d, col=%d, payload=%d, completed=%d\n",
+                   robot->name, msg.row, msg.col, msg.current_payload, task_completed);
             
             send_message_to_central(idx, &msg);
             
