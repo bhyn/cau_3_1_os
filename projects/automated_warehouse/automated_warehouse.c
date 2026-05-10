@@ -20,65 +20,35 @@
 struct robot* robots;
 int number_of_robots;
 
-// 원형 큐 구조
-#define MAX_QUEUE_SIZE 100
+#define MAX_ROBOTS 100
 #define ROBOT_NAME_SIZE 16
-static struct {
-    int robot_indices[MAX_QUEUE_SIZE];
-    int front;
-    int rear;
-    int size;
-} robot_queue;
-
-// 큐 초기화
-static void
-queue_init(int n_robots)
-{
-    robot_queue.front = 0;
-    robot_queue.rear = 0;
-    robot_queue.size = 0;
-    for (int i = 0; i < n_robots; i++) {
-        robot_queue.robot_indices[i] = i;
-        robot_queue.size++;
-    }
-    robot_queue.rear = n_robots;
-}
-
-// 큐에서 로봇 인덱스 가져오기 (앞에서 제거)
-static int
-queue_pop(void)
-{
-    if (robot_queue.size == 0) return -1;
-    int idx = robot_queue.robot_indices[robot_queue.front];
-    robot_queue.front = (robot_queue.front + 1) % MAX_QUEUE_SIZE;
-    robot_queue.size--;
-    return idx;
-}
-
-// 큐에 로봇 인덱스 추가 (뒤에 추가)
-static void
-queue_push(int robot_idx)
-{
-    if (robot_queue.size >= MAX_QUEUE_SIZE) return;
-    robot_queue.robot_indices[robot_queue.rear] = robot_idx;
-    robot_queue.rear = (robot_queue.rear + 1) % MAX_QUEUE_SIZE;
-    robot_queue.size++;
-}
-
-// 큐가 비어있는지 확인
-static int
-queue_is_empty(void)
-{
-    return robot_queue.size == 0;
-}
+static int current_row[MAX_ROBOTS];
+static int current_col[MAX_ROBOTS];
+static int target_row[MAX_ROBOTS];
+static int target_col[MAX_ROBOTS];
+static int desired_cmd[MAX_ROBOTS];
+static int next_row[MAX_ROBOTS];
+static int next_col[MAX_ROBOTS];
+static int accepted[MAX_ROBOTS];
+static int considered[MAX_ROBOTS];
+static int wait_steps[MAX_ROBOTS];
+static int sacrifice_robot_idx = -1;
 
 // Forward declarations
 static int is_blocked_cell(struct robot *robot, int row, int col);
+static int is_shared_place(int row, int col);
 static void get_item_position(char item, int *row, int *col);
 static void get_destination_position(char destination, int *row, int *col);
+static void get_robot_target(struct robot *robot, int *row, int *col);
 static int get_next_direction(struct robot *robot, int target_row, int target_col);
+static int get_escape_direction(struct robot *robot, int target_row, int target_col);
 static int get_distance(int row, int col, int target_row, int target_col);
-static const char *direction_name(int direction);
+static void get_next_position(int row, int col, int direction,
+                              int *next_row, int *next_col);
+static int choose_deadlock_victim(int n_robots, int *victim_direction);
+static int can_accept_batch_move(int robot_idx, int accepted[],
+                                 int current_row[], int current_col[],
+                                 int next_row[], int next_col[]);
 
 // 중앙 관제 스레드 함수
 static void
@@ -87,8 +57,8 @@ central_control_thread(void* aux)
     int n_robots = number_of_robots;
     (void) aux;
 
-    // 로봇 큐 초기화
-    queue_init(n_robots);
+    for (int i = 0; i < n_robots; i++)
+        wait_steps[i] = 0;
 
     while (1) {
         // 1. 모든 로봇으로부터 상태 메시지 수집
@@ -109,6 +79,15 @@ central_control_thread(void* aux)
             }
         }
 
+        for (int i = 0; i < n_robots; i++) {
+            struct message msg = receive_message_from_robot(i);
+            robots[i].row = msg.row;
+            robots[i].col = msg.col;
+            robots[i].current_payload = msg.current_payload;
+            robots[i].required_payload = msg.required_payload;
+            robots[i].task_completed = msg.completed;
+        }
+
         // 2. 맵 출력
         print_map(robots, n_robots);
 
@@ -123,7 +102,6 @@ central_control_thread(void* aux)
         }
 
         if (all_completed) {
-            printf("\n=== 모든 로봇이 작업을 완료했습니다! ===\n");
             shutdown_power_off();
         }
 
@@ -132,29 +110,128 @@ central_control_thread(void* aux)
             send_command_to_robot(i, 0);
         }
 
-        if (!queue_is_empty()) {
-            int robot_idx = queue_pop();
-            struct robot *robot = &robots[robot_idx];
+        int accepted_count = 0;
+        int used_deadlock_victim = 0;
 
-            if (!robot->task_completed) {
-                int target_row, target_col;
-                int direction;
+        // ============================================
+        // 1단계: 모든 로봇의 목표, 현재위치, 다음위치 계산
+        // ============================================
+        for (int i = 0; i < n_robots; i++) {
+            current_row[i] = robots[i].row;
+            current_col[i] = robots[i].col;
+            target_row[i] = -1;
+            target_col[i] = -1;
+            desired_cmd[i] = 0;
+            next_row[i] = robots[i].row;
+            next_col[i] = robots[i].col;
+            accepted[i] = 0;
+            considered[i] = 0;
 
-                if (robot->current_payload == 0) {
-                    get_item_position(robot->required_item + '0',
-                                      &target_row, &target_col);
+            if (!robots[i].task_completed) {
+                // 로봇의 목표 위치 결정 (물건 또는 하역장소)
+                get_robot_target(&robots[i], &target_row[i], &target_col[i]);
+
+                // 희생 로봇이면 이동 명령 없음 (데드락 탈출 중)
+                if (i == sacrifice_robot_idx) {
+                    desired_cmd[i] = 0;
                 } else {
-                    get_destination_position(robot->destination,
-                                             &target_row, &target_col);
+                    // BFS로 목표까지의 다음 방향 계산
+                    desired_cmd[i] = get_next_direction(&robots[i],
+                                                        target_row[i],
+                                                        target_col[i]);
                 }
-
-                direction = get_next_direction(robot, target_row, target_col);
-
-                
-                send_command_to_robot(robot_idx, direction);
-
-                queue_push(robot_idx);
+                // 명령을 실행했을 때의 다음 위치 미리 계산
+                get_next_position(robots[i].row, robots[i].col,
+                                  desired_cmd[i], &next_row[i], &next_col[i]);
             }
+        }
+
+        // ============================================
+        // 2단계: 오래 기다린 로봇부터 이동 가능 여부 판단
+        // ============================================
+        for (int checked = 0; checked < n_robots; checked++) {
+            int robot_idx = -1;
+            int best_wait = -1;
+
+            for (int i = 0; i < n_robots; i++) {
+                if (considered[i] || robots[i].task_completed)
+                    continue;
+
+                if (robot_idx == -1 || wait_steps[i] > best_wait) {
+                    robot_idx = i;
+                    best_wait = wait_steps[i];
+                }
+            }
+
+            if (robot_idx == -1)
+                break;
+
+            considered[robot_idx] = 1;
+
+            // 이동 가능 조건:
+            // 1) 로봇이 이동하려고 함 (desired_cmd != 0)
+            // 2) 다른 로봇들과의 충돌 없음 (can_accept_batch_move)
+            if (desired_cmd[robot_idx] != 0 &&
+                can_accept_batch_move(robot_idx, accepted,
+                                      current_row, current_col,
+                                      next_row, next_col)) {
+                accepted[robot_idx] = 1;
+                accepted_count++;
+            }
+        }
+
+        // ============================================
+        // 3단계: 아무도 이동하지 못했으면 데드락
+        //        희생 로봇 선택 후 뒤로 빠지게 함
+        // ============================================
+        if (accepted_count == 0) {
+            int victim_idx;
+            int victim_direction = 0;
+
+            // 희생 로봇을 선택해서 목표에서 멀어지는 방향으로 이동
+            victim_idx = choose_deadlock_victim(n_robots, &victim_direction);
+
+            if (victim_idx != -1 && victim_direction != 0) {
+                // 희생 로봇의 명령을 뒤로 가는 방향으로 변경
+                desired_cmd[victim_idx] = victim_direction;
+                get_next_position(robots[victim_idx].row,
+                                  robots[victim_idx].col,
+                                  victim_direction,
+                                  &next_row[victim_idx],
+                                  &next_col[victim_idx]);
+                accepted[victim_idx] = 1;
+                accepted_count = 1;
+                used_deadlock_victim = 1;
+
+            }
+        } else {
+            // 이동이 있었으면 희생 로봇 상태 초기화
+            sacrifice_robot_idx = -1;
+        }
+
+        // ============================================
+        // 4단계: accepted 로봇들에게만 실제 명령 전송
+        // ============================================
+        if (accepted_count > 0) {
+
+            for (int i = 0; i < n_robots; i++) {
+                if (!accepted[i])
+                    continue;
+
+
+                send_command_to_robot(i, desired_cmd[i]);
+            }
+        } else {
+            // 아무도 이동하지 못했으면 모든 로봇 WAIT
+            if (!used_deadlock_victim)
+                sacrifice_robot_idx = -1;
+        }
+
+        for (int i = 0; i < n_robots; i++) {
+            if (robots[i].task_completed || accepted[i])
+                wait_steps[i] = 0;
+            else
+                wait_steps[i]++;
         }
 
         // 5. 스텝 증가
@@ -206,6 +283,15 @@ is_blocked_cell(struct robot *robot, int row, int col)
 
         return 0;  // 이동 가능
 }
+
+static int
+is_shared_place(int row, int col)
+{
+        char cell = map_draw_default[row][col];
+
+        return cell == 'A' || cell == 'B' || cell == 'C' || cell == 'W';
+}
+
 // 물건 위치를 반환하는 함수
 static void
 get_item_position(char item, int *row, int *col)
@@ -245,6 +331,15 @@ get_destination_position(char destination, int *row, int *col)
                 *col = COL_W;
                 break;
         }
+}
+
+static void
+get_robot_target(struct robot *robot, int *row, int *col)
+{
+        if (robot->current_payload == 0)
+                get_item_position(robot->required_item + '0', row, col);
+        else
+                get_destination_position(robot->destination, row, col);
 }
 
 // BFS를 이용하여 다음 이동 방향 계산 (로봇 현재 위치에서 목표 위치로)
@@ -346,6 +441,50 @@ get_next_direction(struct robot *robot, int target_row, int target_col)
 }
 
 static int
+get_escape_direction(struct robot *robot, int target_row, int target_col)
+{
+        static const int dr[5] = {0, -1, 1, 0, 0};
+        static const int dc[5] = {0, 0, 0, -1, 1};
+        int best_direction = 0;
+        int best_score = -1000000;
+        int current_distance = get_distance(robot->row, robot->col,
+                                            target_row, target_col);
+
+        for (int direction = 1; direction <= 4; direction++) {
+                int next_row = robot->row + dr[direction];
+                int next_col = robot->col + dc[direction];
+                int next_distance;
+                int score;
+                char cell;
+
+                if (is_blocked_cell(robot, next_row, next_col))
+                        continue;
+
+                next_distance = get_distance(next_row, next_col,
+                                             target_row, target_col);
+                if (next_distance < current_distance)
+                        continue;
+
+                score = (next_distance - current_distance) * 100;
+                cell = map_draw_default[next_row][next_col];
+
+                if (is_shared_place(next_row, next_col))
+                        score += 100;
+                else if (cell == 'S')
+                        score += 20;
+                else if (cell == ' ')
+                        score += 10;
+
+                if (score > best_score) {
+                        best_score = score;
+                        best_direction = direction;
+                }
+        }
+
+        return best_direction;
+}
+
+static int
 get_distance(int row, int col, int target_row, int target_col)
 {
         int row_distance = row - target_row;
@@ -359,21 +498,111 @@ get_distance(int row, int col, int target_row, int target_col)
         return row_distance + col_distance;
 }
 
-static const char *
-direction_name(int direction)
+static void
+get_next_position(int row, int col, int direction,
+                  int *next_row, int *next_col)
 {
-        switch (direction) {
-        case 1:
-                return "UP";
-        case 2:
-                return "DOWN";
-        case 3:
-                return "LEFT";
-        case 4:
-                return "RIGHT";
-        default:
-                return "WAIT";
+        *next_row = row;
+        *next_col = col;
+
+        if (direction == 1)
+                (*next_row)--;
+        else if (direction == 2)
+                (*next_row)++;
+        else if (direction == 3)
+                (*next_col)--;
+        else if (direction == 4)
+                (*next_col)++;
+}
+
+static int
+choose_deadlock_victim(int n_robots, int *victim_direction)
+{
+        int direction;
+        int victim_idx = -1;
+        int victim_wait = -1;
+
+        *victim_direction = 0;
+
+        // 이미 정한 희생 로봇이 계속 뒤로 빠질 수 있으면 그대로 유지한다.
+        if (sacrifice_robot_idx >= 0 &&
+            sacrifice_robot_idx < n_robots &&
+            !robots[sacrifice_robot_idx].task_completed) {
+                direction = get_escape_direction(&robots[sacrifice_robot_idx],
+                                                 target_row[sacrifice_robot_idx],
+                                                 target_col[sacrifice_robot_idx]);
+                if (direction != 0) {
+                        *victim_direction = direction;
+                        return sacrifice_robot_idx;
+                }
         }
+
+        sacrifice_robot_idx = -1;
+
+        // escape 가능한 로봇 중 가장 오래 기다린 로봇을 희생 로봇으로 고른다.
+        for (int robot_idx = 0; robot_idx < n_robots; robot_idx++) {
+                if (robots[robot_idx].task_completed)
+                        continue;
+
+                direction = get_escape_direction(&robots[robot_idx],
+                                                 target_row[robot_idx],
+                                                 target_col[robot_idx]);
+                if (direction != 0 && wait_steps[robot_idx] > victim_wait) {
+                        victim_idx = robot_idx;
+                        victim_wait = wait_steps[robot_idx];
+                        *victim_direction = direction;
+                }
+        }
+
+        sacrifice_robot_idx = victim_idx;
+        return victim_idx;
+}
+
+static int
+can_accept_batch_move(int robot_idx, int accepted[],
+                      int current_row[], int current_col[],
+                      int next_row[], int next_col[])
+{
+        // 충돌 감지: 현재 검토하는 로봇이 다른 로봇들과 안전하게 이동할 수 있는지 확인
+        for (int i = 0; i < number_of_robots; i++) {
+                if (i == robot_idx)
+                        continue;
+
+                if (accepted[i]) {
+                        // 이미 이동 승인된 로봇과의 충돌 확인
+                        // 규칙: current/next 좌표가 겹치면 안 됨
+
+                        // 1) 같은 현재 위치 (불가능)
+                        if (current_row[robot_idx] == current_row[i] &&
+                            current_col[robot_idx] == current_col[i])
+                                return 0;
+
+                        // 2) 내 현재 위치 = 상대 다음 위치 (불가능)
+                        if (current_row[robot_idx] == next_row[i] &&
+                            current_col[robot_idx] == next_col[i])
+                                return 0;
+
+                        // 3) 내 다음 위치 = 상대 현재 위치 (불가능)
+                        if (next_row[robot_idx] == current_row[i] &&
+                            next_col[robot_idx] == current_col[i])
+                                return 0;
+
+                        // 4) 내 다음 위치 = 상대 다음 위치 (불가능)
+                        if (next_row[robot_idx] == next_row[i] &&
+                            next_col[robot_idx] == next_col[i])
+                                return 0;
+                } else {
+                        // 아직 결정되지 않은 로봇 (현재 대기 중)
+                        // 규칙: 공유 장소가 아닌 일반 칸에 있는 로봇이 있으면 진입 불가
+                        if (!is_shared_place(next_row[robot_idx],
+                                             next_col[robot_idx]) &&
+                            next_row[robot_idx] == current_row[i] &&
+                            next_col[robot_idx] == current_col[i])
+                                return 0;
+                }
+        }
+
+        return 1;  // 충돌 없음 → 이동 가능
 }
 
 // 로봇을 명령받은 방향으로 한 칸 이동
@@ -429,6 +658,7 @@ robot_thread(void* aux)
 
             // 중앙으로부터 받은 명령 실행
             int cmd = receive_command_from_central(idx);
+            clear_message_box(idx, 1);
 
             if (!robot->task_completed) {
                 if (cmd != 0)
